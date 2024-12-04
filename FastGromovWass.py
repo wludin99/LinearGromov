@@ -43,6 +43,16 @@ def GW_init_factorized(A_1, A_2, B_1, B_2, p, q):
 
 # need
 def GW_init_cubic(D_1, D_2, a, b):
+    '''
+    math:
+    P = ab^T
+    const_1 = D_1^2 a 1^T
+    const_2 = 1^T b D_2^2
+    const = const_1 + const_2
+    L = const - 2 D_1 P D_2
+    res = sum(L * P)
+    return res
+    '''
     P = a[:, None] * b[None, :]
     const_1 = np.dot(
         np.dot(D_1**2, a.reshape(-1, 1)), np.ones(len(b)).reshape(1, -1)
@@ -75,6 +85,41 @@ def GW_entropic_distance(
     LSE=False,
     time_out=50,
 ):
+    '''
+    math:
+    if Init == "trivial":
+        P = ab^T
+    if Init == "lower_bound":
+        X_new = sqrt(D_1^2 a)
+        Y_new = sqrt(D_2^2 b)
+        C_init = Square_Euclidean_Distance(X_new, Y_new)
+        u, v, K = Sinkhorn(C_init, reg, a, b)
+        P = u K v^T
+    if Init == "random":
+        P = random(n, m)
+        P = P + 1
+        P = (P^T * (a / sum(P, axis=1)))^T
+        
+    const_1 = D_1^2 a 1^T
+    const_2 = 1^T b D_2^2
+    const = const_1 + const_2
+    L = const - 2 D_1 P D_2
+    res = sum(L * P)
+    
+    for k in range(I):
+        if err < delta:
+            return res
+        P_prev = P
+        if LSE == False:
+            u, v, K = Sinkhorn(2L, reg, a, b)
+            P = u K v^T
+        else:
+            P = LSE_Sinkhorn(2L, reg, a, b)
+        L = const - 2 D_1 P D_2
+        res = sum(L * P)
+        err = norm(P - P_prev)
+    return res
+    '''
     start = time.time()
     num_op = 0
     acc = []
@@ -187,6 +232,179 @@ def GW_entropic_distance(
 
     return acc[-1], np.array(acc), np.array(times), np.array(list_num_op), Couplings
 
+def Labeled_GW_entropic_distance(
+    D_1,
+    D_2,
+    reg,
+    a,
+    b,
+    l_X,
+    l_Y,
+    B_l=None,
+    Init="trivial",
+    seed_init=49,
+    I=10,
+    delta=1e-6,
+    delta_sin=1e-9,
+    num_iter_sin=1000,
+    lam_sin=0,
+    LSE=False,
+    time_out=50,
+):
+    '''
+    math:
+    if Init == "trivial":
+        P = ab^T
+    if Init == "lower_bound":
+        X_new = sqrt(D_1^2 a)
+        Y_new = sqrt(D_2^2 b)
+        C_init = Square_Euclidean_Distance(X_new, Y_new)
+        u, v, K = Sinkhorn(C_init, reg, a, b)
+        P = u K v^T
+    if Init == "random":
+        P = random(n, m)
+        P = P + 1
+        P = (P^T * (a / sum(P, axis=1)))^T
+        
+    const_1 = D_1^2 a 1^T
+    const_2 = 1^T b D_2^2
+    const = const_1 + const_2
+    L = const - 2 D_1 P D_2
+    res = sum(L * P)
+    
+    for k in range(I):
+        if err < delta:
+            return res
+        P_prev = P
+        if LSE == False:
+            u, v, K = Sinkhorn(2L, reg, a, b)
+            P = u K v^T
+        else:
+            P = LSE_Sinkhorn(2L, reg, a, b)
+        L = const - 2 D_1 P D_2
+        res = sum(L * P)
+        err = norm(P - P_prev)
+    return res
+
+
+    requires
+    l_X = a.shape[0]
+    l_Y = b.shape[0]
+    B_l.shape = (l_x, l_y) is label matrix
+    '''
+    start = time.time()
+    num_op = 0
+    acc = []
+    times = []
+    list_num_op = []
+    Couplings = []
+
+    n, m = np.shape(a)[0], np.shape(b)[0]
+
+    if B_l is None:
+        B_l = np.zeros((l_X, l_Y))
+        for i in range(l_X):
+            for j in range(l_Y):
+                if i == j:
+                    B_l[i, j] = 1
+
+    if Init == "trivial":
+        P = a[:, None] * b[None, :]
+        Couplings.append(P)
+        num_op = num_op + n * m
+
+    if Init == "lower_bound":
+        X_new = np.sqrt(np.dot(D_1**2, a).reshape(-1, 1))  # 2 * n * n + n
+        Y_new = np.sqrt(np.dot(D_2**2, b).reshape(-1, 1))  # 2 * m * m + m
+        C_init = Square_Euclidean_Distance(X_new, Y_new)  # n * m
+        num_op = num_op + n * m + 2 * n * n + 2 * m * m + n + m
+
+        if LSE == False:
+            u, v, K, count_op_Sin = Sinkhorn(
+                C_init, reg, a, b, delta=delta_sin, num_iter=num_iter_sin, lam=lam_sin
+            )
+            num_op = num_op + count_op_Sin
+            P = u[:, None] * K * v[None, :]
+            num_op = num_op + 2 * n * m
+        else:
+            P, count_op_Sin_LSE = LSE_Sinkhorn(
+                C_init, reg, a, b, delta=delta_sin, num_iter=num_iter_sin, lam=lam_sin
+            )
+            num_op = num_op + count_op_Sin_LSE
+
+        Couplings.append(P)
+
+    if Init == "random":
+        np.random.seed(seed_init)
+        P = np.abs(np.random.randn(n, m))
+        P = P + 1
+        P = (P.T * (a / np.sum(P, axis=1))).T
+        Couplings.append(P)
+        num_op = num_op + 3 * n * m + n
+
+    const_1 = np.dot(
+        np.dot(D_1**2, a.reshape(-1, 1)), np.ones(len(b)).reshape(1, -1)
+    )  # 2 * n * n + n * m
+    const_2 = np.dot(
+        np.ones(len(a)).reshape(-1, 1), np.dot(b.reshape(1, -1), (D_2**2).T)
+    )  # 2 * m * m + n * m
+    num_op = num_op + 2 * n * m + 2 * n * n + 2 * m * m
+    const = const_1 + const_2
+    L = const - 2 * np.dot(np.dot(D_1, P), D_2)
+
+    res = np.sum(L * P)
+    # print(res)
+    end = time.time()
+    curr_time = end - start
+    times.append(curr_time)
+    acc.append(res)
+    list_num_op.append(num_op)
+
+    err = 1
+    for k in range(I):
+        if err < delta:
+            return (
+                acc[-1],
+                np.array(acc),
+                np.array(times),
+                np.array(list_num_op),
+                Couplings,
+            )
+        P_prev = P
+
+        u, v, K, count_op_Sin = LabeledSinkhorn(
+            2 * L, reg, a, b, B_l, delta=delta_sin, num_iter=num_iter_sin, lam=lam_sin
+        )
+        num_op = num_op + count_op_Sin
+        P = u.reshape((-1, 1)) * K * v.reshape((1, -1))
+        num_op = num_op + 2 * n * m
+
+        L = const - 2 * np.dot(np.dot(D_1, P), D_2)
+        num_op = num_op + n * n * m + n * m * m + 2 * n * m
+        res = np.sum(L * P)
+        # print(res)
+
+        if np.isnan(res) == True:
+            return "Error"
+        else:
+            acc.append(res)
+            Couplings.append(P)
+
+        err = np.linalg.norm(P - P_prev)
+        end = time.time()
+        curr_time = end - start
+        times.append(curr_time)
+        list_num_op.append(num_op)
+        if curr_time > time_out:
+            return (
+                acc[-1],
+                np.array(acc),
+                np.array(times),
+                np.array(list_num_op),
+                Couplings,
+            )
+
+    return acc[-1], np.array(acc), np.array(times), np.array(list_num_op), Couplings
 
 #### QUAD VERSION ####
 ## Stable version: works for every $\varepsilon ##
@@ -362,6 +580,543 @@ def update_Quad_cost_GW(D1, D2, Q, R, g):
     num_op = n * n * r + 2 * n * r + r * m * m
     return cost_trans_1, cost_trans_2, num_op
 
+def Labeled_Quad_LGW_MD(
+    X,
+    Y,
+    a,
+    b,
+    rank,
+    cost,
+    l_X,
+    l_Y,
+    L=None,
+    B_lX=None,
+    B_lY=None,
+    time_out=200,
+    max_iter=1000,
+    delta=1e-3,
+    gamma_0=10,
+    gamma_init="rescale",
+    reg=0,
+    alpha=1e-10,
+    C_init=False,
+    Init="trivial",
+    seed_init=49,
+    reg_init=1e-1,
+    method="Dykstra",
+    max_iter_IBP=10000,
+    delta_IBP=1e-3,
+    lam_IBP=0,
+    rescale_cost=True,
+):
+    '''
+    NB: only partially implemented. Use with caution. Use trivial initialization for now.
+
+    params:
+    l_X : list of ints corresponding to perturbations labels of X
+    l_Y : list of ints corresponding to perturbations labels of Y
+    B_lX : label mask matrix for Q
+    B_lY : label mask matrix for R
+    L : int, number of labels
+
+    math:
+    if C_init == True:
+        D1, D2 = cost
+        if rescale_cost == True:
+            D1, D2 = D1 / D1.max(), D2 / D2.max()
+    else:
+        D1, D2 = cost(X, X), cost(Y, Y)
+        if rescale_cost == True:
+            D1, D2 = D1 / D1.max(), D2 / D2.max()
+    
+    # Initialization
+    if Init == "kmeans":
+        g = np.ones(rank) / rank
+        kmeans_X = KMeans(n_clusters=rank, random_state=0).fit(X)
+        Z_X = kmeans_X.cluster_centers_
+        C_trans_X = utils.Square_Euclidean_Distance(X, Z_X)
+        C_trans_X = C_trans_X/C_trans_X.max()
+        results = Sinkhorn(
+            C_trans_X.
+            reg_init,
+            a,
+            g)
+    if Init == "lower_bound":
+        X_new = sqrt(D1^2 a)
+        Y_new = sqrt(D2^2 b)
+        cost_factorized_init = lambda X, Y: factorized_square_Euclidean(X, Y)
+        cost_init = lambda z1, z2: Square_Euclidean_Distance(z1, z2)
+        results = Lin_LOT_MD(
+            X_new,
+            Y_new,
+            a,
+            b,
+            rank,
+            cost_init,
+            cost_factorized_init,
+            reg=0,
+            alpha=1e-10,
+            gamma_0=gamma_0,
+        )
+    if Init == "random":
+        np.random.seed(seed_init)
+        g = np.abs(np.random.randn(rank))
+        g = g + 1
+        g = g / np.sum(g)
+        Q = np.abs(np.random.randn(n, rank))
+        Q = Q + 1
+        Q = (Q.T * (a / np.sum(Q, axis=1))).T
+        R = np.abs(np.random.randn(m, rank))
+        R = R + 1
+        R = (R.T * (b / np.sum(R, axis=1))).T
+    if Init == "trivial":
+        g = np.ones(rank) / rank
+        lambda_1 = min(min(a), min(g), min(b)) / 2
+        a1 = np.arange(1, np.shape(a)[0] + 1)
+        a1 = a1 / sum(a1)
+        a2 = (a - lambda_1 * a1) / (1 - lambda_1)
+        b1 = np.arange(1, np.shape(b)[0] + 1)
+        b1 = b1 / sum(b1)
+        b2 = (b - lambda_1 * b1) / (1 - lambda_1)
+        g1 = np.arange(1, rank + 1)
+        g1 = g1 / sum(g1)
+        g2 = (g - lambda_1 * g1) / (1 - lambda_1)
+        Q = lambda_1 * a1 g1^T + (1 - lambda_1) * a2 g2^T
+        R = lambda_1 * b1 g1^T + (1 - lambda_1) * b2 g2^T
+        Couplings.append((Q, R, g))
+    
+    if gamma_init == "theory":
+        gamma = 1
+    if gamma_init == "regularization":
+        gamma = 1 / reg
+    if gamma_init == "arbitrary":
+        gamma = gamma_0
+    
+    c = D1^2 a a^T + D2^2 b b^T
+    C1, C2, num_op_update = update_Quad_cost_GW(D1, D2,
+                                                Q, R, g
+                                                )
+    
+    # GW Cost
+    C_trans = C2 R
+    C_trans = C1 C_trans
+    C_trans = C_trans / g
+    G = Q^T C_trans
+    OT_trans = trace(G)
+    GW_trans = c + OT_trans
+    
+ (While err > delta):
+   - Increment the iteration counter.
+   - Compute gradients:
+     - K1_trans_0 = C1 * (C2 * R)
+     - grad_Q = K1_trans_0 / g
+     - If reg is not zero:
+       - grad_Q += reg * log(Q)
+       - If gamma_init is "rescale":
+         - norm_1 = max(abs(grad_Q))^2
+     - K2_trans_0 = C1.T * (C2.T * Q)
+     - grad_R = K2_trans_0 / g
+     - If reg is not zero:
+       - grad_R += reg * log(R)
+       - If gamma_init is "rescale":
+         - norm_2 = max(abs(grad_R))^2
+     - omega = diag(Q.T * K1_trans_0)
+     - grad_g = -omega / (g^2)
+     - If reg is not zero:
+       - grad_g += reg * log(g)
+       - If gamma_init is "rescale":
+         - norm_3 = max(abs(grad_g))^2
+
+   - Rescale Gamma (If gamma_init is "rescale"):
+     - gamma = gamma_0 / max(norm_1, norm_2, norm_3)
+
+   - Transform Cost Matrices:
+     - C1_trans = grad_Q - (1 / gamma) * log(Q)
+     - C2_trans = grad_R - (1 / gamma) * log(R)
+     - C3_trans = grad_g - (1 / gamma) * log(g)
+
+   - Update the number of operations (num_op).
+
+   - Update Couplings:
+     - If method is "IBP":
+       - Update Q, R, g using LinSinkhorn.LR_IBP_Sin.
+     - If method is "Dykstra":
+       - Update Q, R, g using LinSinkhorn.LR_Dykstra_Sin.
+       - Increment the number of operations.
+     - If method is "Dykstra_LSE":
+       - Update Q, R, g using LinSinkhorn.LR_Dykstra_LSE_Sin.
+       - Increment the number of operations.
+
+   - Update Total Cost:
+     - Compute new C1 and C2.
+   - Calculate GW_trans.
+   - If GW_trans is NaN:
+     - Revert to previous Q, R, g.
+     - Break the loop.
+
+    '''
+
+    start = time.time()
+    num_op = 0
+    acc = []
+    times = []
+    list_num_op = []
+    Couplings = []
+
+    if gamma_0 * reg >= 1:
+        # display(Latex(f'Choose $\gamma$ and $\epsilon$ such that $\gamma$ x $\epsilon<1$'))
+        print("gamma et epsilon must be well choosen")
+        return "Error"
+
+    r = rank
+    n, m = np.shape(a)[0], np.shape(b)[0]
+
+    if C_init == True:
+        if len(cost) != 2:
+            print("Error: some cost matrices are missing")
+            return "Error"
+        else:
+            D1, D2 = cost
+            if rescale_cost == True:
+                D1, D2 = D1 / D1.max(), D2 / D2.max()
+    else:
+        D1, D2 = cost(X, X), cost(Y, Y)
+        if len(D1) != 1:
+            print("Error: the cost function is not adapted")
+            return "Error"
+        else:
+            if rescale_cost == True:
+                D1, D2 = D1 / D1.max(), D2 / D2.max()
+
+    # Init label mask matrices
+    if L is None:
+        L = max(l_X)
+    if max(l_X) != max(l_Y):
+        print("Error: the labels are not well defined")
+        return "Error"
+    
+    if B_lX is None:
+        B_lX = np.zeros((n, L*r))
+        for i in range(n):
+            B_lX[i, l_X[i]*r:(l_X[i]+1)*r] = 1
+    if B_lY is None:
+        B_lY = np.zeros((m, L*r))
+        for i in range(m):
+            B_lY[i, l_Y[i]*r:(l_Y[i]+1)*r] = 1
+        
+
+#     ########### Initialization ###########
+#     if Init == "kmeans":
+#         g = np.ones(rank) / rank
+#         kmeans_X = KMeans(n_clusters=rank, random_state=0).fit(X)
+#         num_iter_kmeans_X = kmeans_X.n_iter_
+#         Z_X = kmeans_X.cluster_centers_
+#         C_trans_X = utils.Square_Euclidean_Distance(X, Z_X)
+#         C_trans_X = C_trans_X / C_trans_X.max()
+#         results = utils.Sinkhorn(
+#             C_trans_X,
+#             reg_init,
+#             a,
+#             g,
+#             max_iter=max_iter_IBP,
+#             delta=delta_IBP,
+#             lam=lam_IBP,
+#             time_out=1e100,
+#         )
+#         res, arr_acc_X, arr_times_X, Q, arr_num_op_X = results
+# 
+#         # lb_X = preprocessing.LabelBinarizer()
+#         # lb_X.fit(kmeans_X.labels_)
+#         # Q = lb_X.transform(kmeans_X.labels_)
+#         # Q = (Q.T * a).T
+# 
+#         kmeans_Y = KMeans(n_clusters=rank, random_state=0).fit(Y)
+#         num_iter_kmeans_Y = kmeans_Y.n_iter_
+#         Z_Y = kmeans_Y.cluster_centers_
+#         C_trans_Y = utils.Square_Euclidean_Distance(Y, Z_Y)
+#         C_trans_Y = C_trans_Y / C_trans_Y.max()
+#         results = utils.Sinkhorn(
+#             C_trans_Y,
+#             reg_init,
+#             b,
+#             g,
+#             max_iter=max_iter_IBP,
+#             delta=delta_IBP,
+#             lam=lam_IBP,
+#             time_out=1e100,
+#         )
+#         res, arr_acc_Y, arr_times_Y, R, arr_num_op_Y = results
+# 
+#         # lb_Y = preprocessing.LabelBinarizer()
+#         # lb_Y.fit(kmeans_Y.labels_)
+#         # R = lb_Y.transform(kmeans_Y.labels_)
+#         # R = (R.T * b).T
+# 
+#         num_op = (
+#             num_op
+#             + (num_iter_kmeans_X + np.shape(arr_acc_X)[0]) * rank * np.shape(X)[0]
+#             + (num_iter_kmeans_Y + np.shape(arr_acc_Y)[0]) * rank * np.shape(Y)[0]
+#         )
+# 
+#     ## Init Lower bound
+#     if Init == "lower_bound":
+#         X_new = np.sqrt(np.dot(D1**2, a).reshape(-1, 1))  # 2 * n * n + n
+#         Y_new = np.sqrt(np.dot(D2**2, b).reshape(-1, 1))  # 2 * m * m + m
+#         num_op = num_op + 2 * n * n + 2 * m * m
+#         cost_factorized_init = lambda X, Y: factorized_square_Euclidean(X, Y)
+#         cost_init = lambda z1, z2: Square_Euclidean_Distance(z1, z2)
+# 
+#         results = LinSinkhorn.Lin_LOT_MD(
+#             X_new,
+#             Y_new,
+#             a,
+#             b,
+#             rank,
+#             cost_init,
+#             cost_factorized_init,
+#             reg=0,
+#             alpha=1e-10,
+#             gamma_0=gamma_0,
+#             max_iter=1000,
+#             delta=1e-3,
+#             time_out=5,
+#             Init="kmeans",
+#             seed_init=49,
+#             C_init=False,
+#             reg_init=1e-1,
+#             gamma_init="rescale",
+#             method="Dykstra",
+#             max_iter_IBP=10000,
+#             delta_IBP=1e-3,
+#             lam_IBP=0,
+#             rescale_cost=True,
+#         )
+# 
+#         res_init, acc_init, times_init, num_op_init, list_criterion, Q, R, g = results
+#         Couplings.append((Q, R, g))
+#         num_op = num_op + num_op_init[-1]
+# 
+#         # print('res: '+str(res_init))
+# 
+#     ## Init random
+#     if Init == "random":
+#         np.random.seed(seed_init)
+#         g = np.abs(np.random.randn(rank))
+#         g = g + 1  # r
+#         g = g / np.sum(g)  # r
+# 
+#         Q = np.abs(np.random.randn(n, rank))
+#         Q = Q + 1  # n * r
+#         Q = (Q.T * (a / np.sum(Q, axis=1))).T  # n + 2 * n * r
+# 
+#         R = np.abs(np.random.randn(m, rank))
+#         R = R + 1  # n * r
+#         R = (R.T * (b / np.sum(R, axis=1))).T  # m + 2 * m * r
+# 
+#         Couplings.append((Q, R, g))
+#         num_op = num_op + 2 * n * r + 2 * m * r + n + m + 2 * r
+
+    ## Init trivial
+    if Init == "trivial":
+
+        g = np.ones(rank * L) / (rank * L)
+        Q = Sinkhorn(B_lX, reg, a, g)
+        R = Sinkhorn(B_lY, reg, b, g)
+
+        Couplings.append((Q, R, g))
+        num_op = num_op + 4 * n * r + 4 * m * r + 3 * n + 3 * m + 3 * r
+    #####################################
+
+    if gamma_init == "theory":
+        gamma = 1  # to compute
+
+    if gamma_init == "regularization":
+        gamma = 1 / reg
+
+    if gamma_init == "arbitrary":
+        gamma = gamma_0
+
+    c = np.dot(np.dot(D1**2, a), a) + np.dot(
+        np.dot(D2**2, b), b
+    )  # 2 * n * n + n + 2 * m * m + m
+    C1, C2, num_op_update = update_Quad_cost_GW(D1, D2, Q, R, g)
+    num_op = num_op + 2 * n * n + n + 2 * m * m + m + num_op_update
+
+    # GW cost
+    C_trans = np.dot(C2, R)
+    C_trans = np.dot(C1, C_trans)
+    C_trans = C_trans / g
+    G = np.dot(Q.T, C_trans)
+    OT_trans = np.trace(G)  # \langle -4DPD',P\rangle
+    GW_trans = c + OT_trans / 2
+    # print(GW_trans)
+
+    acc.append(GW_trans)
+    end = time.time()
+    time_actual = end - start
+    times.append(time_actual)
+    list_num_op.append(num_op)
+
+    err = 1
+    niter = 0
+    count_escape = 1
+    while (niter < max_iter) and (time_actual < time_out):
+        Q_prev = Q
+        R_prev = R
+        g_prev = g
+        # P_prev = np.dot(Q/g,R.T)
+        if err > delta:
+            niter = niter + 1
+
+            K1_trans_0 = np.dot(C2, R)  # r * m * r
+            K1_trans_0 = np.dot(C1, K1_trans_0)  # n * r * r
+            grad_Q = K1_trans_0 / g
+            if reg != 0.0:
+                grad_Q = grad_Q + reg * np.log(Q)
+            if gamma_init == "rescale":
+                # norm_1 = np.linalg.norm(grad_Q)**2
+                norm_1 = np.max(np.abs(grad_Q)) ** 2
+
+            K2_trans_0 = np.dot(C1.T, Q)  # r * n * r
+            K2_trans_0 = np.dot(C2.T, K2_trans_0)  # m * r * r
+            grad_R = K2_trans_0 / g
+            if reg != 0.0:
+                grad_R = grad_R + reg * np.log(R)
+            if gamma_init == "rescale":
+                # norm_2 = np.linalg.norm(grad_R)**2
+                norm_2 = np.max(np.abs(grad_R)) ** 2
+
+            omega = np.diag(np.dot(Q.T, K1_trans_0))  # r * n * r
+            grad_g = -(omega / (g**2))
+            if reg != 0.0:
+                grad_g = grad_g + reg * np.log(g)
+            if gamma_init == "rescale":
+                # norm_3 = np.linalg.norm(grad_g)**2
+                norm_3 = np.max(np.abs(grad_g)) ** 2
+
+            if gamma_init == "rescale":
+                gamma = gamma_0 / max(norm_1, norm_2, norm_3)
+
+            C1_trans = grad_Q - (1 / gamma) * np.log(Q)  # 3 * n * r
+            C2_trans = grad_R - (1 / gamma) * np.log(R)  # 3 * m * r
+            C3_trans = grad_g - (1 / gamma) * np.log(g)  # 4 * r
+
+            num_op = (
+                num_op + 3 * n * r * r + 2 * m * r * r + 3 * n * r + 3 * m * r + 4 * r
+            )
+
+            # Update the coupling
+            if method == "IBP":
+                K1 = np.exp((-gamma) * C1_trans)
+                K2 = np.exp((-gamma) * C2_trans)
+                K3 = np.exp((-gamma) * C3_trans)
+                Q, R, g = LinSinkhorn.LR_IBP_Sin(
+                    K1,
+                    K2,
+                    K3,
+                    a,
+                    b,
+                    max_iter=max_iter_IBP,
+                    delta=delta_IBP,
+                    lam=lam_IBP,
+                )
+
+            if method == "Dykstra":
+                K1 = np.exp((-gamma) * C1_trans)
+                K2 = np.exp((-gamma) * C2_trans)
+                K3 = np.exp((-gamma) * C3_trans)
+                num_op = num_op + 2 * n * r + 2 * m * r + 2 * r
+                Q, R, g, count_op_Dysktra, n_iter_Dykstra = LinSinkhorn.LR_Dykstra_Sin(
+                    K1,
+                    K2,
+                    K3,
+                    a,
+                    b,
+                    alpha,
+                    max_iter=max_iter_IBP,
+                    delta=delta_IBP,
+                    lam=lam_IBP,
+                )
+
+                num_op = num_op + count_op_Dysktra
+
+            if method == "Dykstra_LSE":
+                Q, R, g, count_op_Dysktra_LSE = LinSinkhorn.LR_Dykstra_LSE_Sin(
+                    C1_trans,
+                    C2_trans,
+                    C3_trans,
+                    a,
+                    b,
+                    alpha,
+                    gamma,
+                    max_iter=max_iter_IBP,
+                    delta=delta_IBP,
+                    lam=lam_IBP,
+                )
+
+                num_op = num_op + count_op_Dysktra_LSE
+
+            # Update the total cost
+            C1, C2, num_op_update = update_Quad_cost_GW(D1, D2, Q, R, g)
+            num_op = num_op + num_op_update
+
+            # GW cost
+            C_trans = np.dot(C2, R)
+            C_trans = np.dot(C1, C_trans)
+            C_trans = C_trans / g
+            G = np.dot(Q.T, C_trans)
+            OT_trans = np.trace(G)  # \langle -4DPD',P\rangle
+            GW_trans = c + OT_trans / 2
+            # print(GW_trans)
+
+            if np.isnan(GW_trans) == True:
+                print("Error LR-GW: GW cost", niter)
+                Q = Q_prev
+                R = R_prev
+                g = g_prev
+                break
+
+            ## Update the error: Practical error
+            # err = np.abs(GW_trans - acc[-1]) / acc[-1]
+            # err = np.abs(GW_trans - acc[-1]) / np.log(num_op - list_num_op[-1])
+
+            ## Update error: difference between couplings
+            # P_act = np.dot(Q/g,R.T)
+            # err = np.linalg.norm(P_act - P_prev)
+            # print(err)
+
+            ## Update the error: theoritical error
+            err_1 = ((1 / gamma) ** 2) * (KL(Q, Q_prev) + KL(Q_prev, Q))
+            err_2 = ((1 / gamma) ** 2) * (KL(R, R_prev) + KL(R_prev, R))
+            err_3 = ((1 / gamma) ** 2) * (KL(g, g_prev) + KL(g_prev, g))
+            criterion = err_1 + err_2 + err_3
+            # print(criterion)
+
+            if niter > 1:
+                if criterion > delta / 1e-1:
+                    err = criterion
+                else:
+                    count_escape = count_escape + 1
+                    if count_escape != niter:
+                        err = criterion
+
+            if np.isnan(criterion) == True:
+                print("Error LR-GW: stopping criterion", niter)
+                Q = Q_prev
+                R = R_prev
+                g = g_prev
+                break
+
+            acc.append(GW_trans)
+            Couplings.append((Q, R, g))
+            time_actual = time.time() - start
+            times.append(time_actual)
+            list_num_op.append(num_op)
+
+        else:
+            break
+
+    return acc[-1], np.array(acc), np.array(times), np.array(list_num_op), Couplings
 
 # If C_init = True, cost is a tuple of matrices
 # If C_init = False, cost is a function
@@ -390,6 +1145,144 @@ def Quad_LGW_MD(
     lam_IBP=0,
     rescale_cost=True,
 ):
+    '''
+    math:
+    if C_init == True:
+        D1, D2 = cost
+        if rescale_cost == True:
+            D1, D2 = D1 / D1.max(), D2 / D2.max()
+    else:
+        D1, D2 = cost(X, X), cost(Y, Y)
+        if rescale_cost == True:
+            D1, D2 = D1 / D1.max(), D2 / D2.max()
+    
+    # Initialization
+    if Init == "kmeans":
+        g = np.ones(rank) / rank
+        kmeans_X = KMeans(n_clusters=rank, random_state=0).fit(X)
+        Z_X = kmeans_X.cluster_centers_
+        C_trans_X = utils.Square_Euclidean_Distance(X, Z_X)
+        C_trans_X = C_trans_X/C_trans_X.max()
+        results = Sinkhorn(
+            C_trans_X.
+            reg_init,
+            a,
+            g)
+    if Init == "lower_bound":
+        X_new = sqrt(D1^2 a)
+        Y_new = sqrt(D2^2 b)
+        cost_factorized_init = lambda X, Y: factorized_square_Euclidean(X, Y)
+        cost_init = lambda z1, z2: Square_Euclidean_Distance(z1, z2)
+        results = Lin_LOT_MD(
+            X_new,
+            Y_new,
+            a,
+            b,
+            rank,
+            cost_init,
+            cost_factorized_init,
+            reg=0,
+            alpha=1e-10,
+            gamma_0=gamma_0,
+        )
+    if Init == "random":
+        np.random.seed(seed_init)
+        g = np.abs(np.random.randn(rank))
+        g = g + 1
+        g = g / np.sum(g)
+        Q = np.abs(np.random.randn(n, rank))
+        Q = Q + 1
+        Q = (Q.T * (a / np.sum(Q, axis=1))).T
+        R = np.abs(np.random.randn(m, rank))
+        R = R + 1
+        R = (R.T * (b / np.sum(R, axis=1))).T
+    if Init == "trivial":
+        g = np.ones(rank) / rank
+        lambda_1 = min(min(a), min(g), min(b)) / 2
+        a1 = np.arange(1, np.shape(a)[0] + 1)
+        a1 = a1 / sum(a1)
+        a2 = (a - lambda_1 * a1) / (1 - lambda_1)
+        b1 = np.arange(1, np.shape(b)[0] + 1)
+        b1 = b1 / sum(b1)
+        b2 = (b - lambda_1 * b1) / (1 - lambda_1)
+        g1 = np.arange(1, rank + 1)
+        g1 = g1 / sum(g1)
+        g2 = (g - lambda_1 * g1) / (1 - lambda_1)
+        Q = lambda_1 * a1 g1^T + (1 - lambda_1) * a2 g2^T
+        R = lambda_1 * b1 g1^T + (1 - lambda_1) * b2 g2^T
+        Couplings.append((Q, R, g))
+    
+    if gamma_init == "theory":
+        gamma = 1
+    if gamma_init == "regularization":
+        gamma = 1 / reg
+    if gamma_init == "arbitrary":
+        gamma = gamma_0
+    
+    c = D1^2 a a^T + D2^2 b b^T
+    C1, C2, num_op_update = update_Quad_cost_GW(D1, D2,
+                                                Q, R, g
+                                                )
+    
+    # GW Cost
+    C_trans = C2 R
+    C_trans = C1 C_trans
+    C_trans = C_trans / g
+    G = Q^T C_trans
+    OT_trans = trace(G)
+    GW_trans = c + OT_trans
+    
+ (While err > delta):
+   - Increment the iteration counter.
+   - Compute gradients:
+     - K1_trans_0 = C1 * (C2 * R)
+     - grad_Q = K1_trans_0 / g
+     - If reg is not zero:
+       - grad_Q += reg * log(Q)
+       - If gamma_init is "rescale":
+         - norm_1 = max(abs(grad_Q))^2
+     - K2_trans_0 = C1.T * (C2.T * Q)
+     - grad_R = K2_trans_0 / g
+     - If reg is not zero:
+       - grad_R += reg * log(R)
+       - If gamma_init is "rescale":
+         - norm_2 = max(abs(grad_R))^2
+     - omega = diag(Q.T * K1_trans_0)
+     - grad_g = -omega / (g^2)
+     - If reg is not zero:
+       - grad_g += reg * log(g)
+       - If gamma_init is "rescale":
+         - norm_3 = max(abs(grad_g))^2
+
+   - Rescale Gamma (If gamma_init is "rescale"):
+     - gamma = gamma_0 / max(norm_1, norm_2, norm_3)
+
+   - Transform Cost Matrices:
+     - C1_trans = grad_Q - (1 / gamma) * log(Q)
+     - C2_trans = grad_R - (1 / gamma) * log(R)
+     - C3_trans = grad_g - (1 / gamma) * log(g)
+
+   - Update the number of operations (num_op).
+
+   - Update Couplings:
+     - If method is "IBP":
+       - Update Q, R, g using LinSinkhorn.LR_IBP_Sin.
+     - If method is "Dykstra":
+       - Update Q, R, g using LinSinkhorn.LR_Dykstra_Sin.
+       - Increment the number of operations.
+     - If method is "Dykstra_LSE":
+       - Update Q, R, g using LinSinkhorn.LR_Dykstra_LSE_Sin.
+       - Increment the number of operations.
+
+   - Update Total Cost:
+     - Compute new C1 and C2.
+   - Calculate GW_trans.
+   - If GW_trans is NaN:
+     - Revert to previous Q, R, g.
+     - Break the loop.
+
+    '''
+
     start = time.time()
     num_op = 0
     acc = []
@@ -1350,6 +2243,57 @@ def apply_lin_lr_gw(
     Q, R, g = Couplings[-1]
     return res, Q, R, g
 
+
+def LabeledSinkhorn(C, reg, a, b, B_l, delta=1e-9, num_iter=1000, lam=1e-6):
+
+    n, m = np.shape(C)
+    # K = np.exp(-C/reg)
+    # Next 3 lines equivalent to K= np.exp(-C/reg), but faster to compute
+    K = np.empty(C.shape, dtype=C.dtype)
+    np.divide(C, -reg, out=K)  # n * m
+    np.exp(K, out=K)  # n * m
+    K = K * B_l
+
+    u = np.ones(np.shape(a)[0])  # /np.shape(a)[0]
+    v = np.ones(np.shape(b)[0])  # /np.shape(b)[0]
+
+    v_trans = np.dot(K.T, u) + lam  # add regularization to avoid divide 0
+
+    err = 1
+    index = 0
+    while index < num_iter:
+        uprev = u
+        vprev = v
+        if err > delta:
+            index = index + 1
+
+            v = b / v_trans
+
+            u_trans = np.dot(K, v) + lam  # add regularization to avoid divide 0
+            u = a / u_trans
+
+            if (
+                np.any(np.isnan(u))
+                or np.any(np.isnan(v))
+                or np.any(np.isinf(u))
+                or np.any(np.isinf(v))
+            ):
+                # we have reached the machine precision
+                # come back to previous solution and quit loop
+                print("Warning: numerical errors at iteration", index)
+                u = uprev
+                v = vprev
+                break
+
+            v_trans = np.dot(K.T, u) + lam
+            err = np.sum(np.abs(v * v_trans - b))
+
+        else:
+            num_op = 3 * n * m + (index + 1) * (2 * n * m + n + m)
+            return u, v, K, num_op
+
+    num_op = 3 * n * m + (index + 1) * (2 * n * m + n + m)
+    return u, v, K, num_op
 
 def Sinkhorn(C, reg, a, b, delta=1e-9, num_iter=1000, lam=1e-6):
 
